@@ -1,0 +1,534 @@
+unit Main;
+{
+Яйцо активируется в режиме экзамен, после нажатия комбинации клавишь Control + цифра,
+где цифра вычисляется например: 11:20 => 1+1+2 = 4.
+
+// Многосторочный RadioGroup
+const BS_MULTILINE = $2000;
+
+type
+ TMyRadioButton = class(TRadioButton)
+ protected
+   procedure CreateParams(var Params: TCreateParams); override;
+ public
+   constructor Create(AOwner: TComponent); override;
+ end;
+
+constructor TMyRadioButton.Create(AOwner: TComponent);
+begin
+ inherited Create(AOwner);
+end;
+
+procedure TMyRadioButton.CreateParams(var Params: TCreateParams);
+begin
+ inherited CreateParams(Params);
+ Params.Style:=Params.Style or BS_MULTILINE;
+end;
+
+end.
+
+// Или если в Delphi 7
+// RadioGroup1.Buttons[n].WordWrap := True; 
+}
+interface
+
+uses
+  Windows, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
+  Dialogs, Menus, StdCtrls, Buttons, IniFiles, Registry, ExtCtrls, ComCtrls;
+const
+  popitk = 2;  // При 2-х неправильных комбинациях яйцо выключается.
+  constOtch = 'Вопросы на которые были даны НЕВЕРНЫЕ ответы при последней сдаче:';
+type
+  TForm1 = class(TForm)
+    RadioGroup: TRadioGroup;
+    MainMenu: TMainMenu;
+    N1: TMenuItem;
+    N3: TMenuItem;
+    N2: TMenuItem;
+    N6: TMenuItem;
+    N4: TMenuItem;
+    N5: TMenuItem;
+    N7: TMenuItem;
+    OpenDialog: TOpenDialog;
+    Timer1: TTimer;
+    Label1: TLabel;
+    Memo: TMemo;
+    Splitter1: TSplitter;
+    StatusBar: TStatusBar;
+    procedure FormCreate(Sender: TObject);
+    procedure RadioGroupClick(Sender: TObject);
+    procedure N3Click(Sender: TObject);
+    procedure N7Click(Sender: TObject);
+    procedure N6Click(Sender: TObject);
+    procedure N4Click(Sender: TObject);
+    procedure N5Click(Sender: TObject);
+    function NextVopr:String;
+    procedure EndTest;
+    procedure StartTest;
+    procedure StartExam;
+    procedure EndExam;
+    procedure Otlichno;
+    procedure ColorMemo;
+    procedure RezSave;
+    procedure Timer1Timer(Sender: TObject);
+    procedure YaitcTimer(Sender: TObject);
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean); // Отлично
+  private
+    { Private declarations }
+    Cap: String; // Название окна программы
+    IniF: Tinifile; //объект INI-файл
+    Test: boolean; // True - идёт тест, False - нет теста.
+    iVop: Integer; // Индекс текущего вопроса
+    TrueVop: Integer; //Кол-во правильных ответов
+    FalseVop: Integer; //Кол-во НЕправильных ответов
+    err : integer;
+    svop : string;   // Текущий вопрос
+    Yaitc: TTimer;   // True - пользователь воспользовался яйцом, False - не поспользовался.
+    yaitco: boolean;
+    ipopitk : integer;  // Для подсчёта количества нажатий cntrl + цифра.
+  public
+    { Public declarations }
+    VopAll: String; //Всего вопросов
+    VopFirst: String; //№ 1-го вопроса
+    TekFile: String; //Имя текущего INI файла с вопросами.
+    VopTest: String; // Число вопросов в тесте
+    VopShowErr: String; //Показывать ошибку при ответе
+    ch5,ch4,ch3,ch2: integer;
+    VopDelayErr: integer; //Задержка показа ошибки
+    MemRez: TMemo;
+    VopOtch: String; // Сохранять или нет отчет об экзамене в файл
+    ind : integer; // № вопроса в файле
+//    svop : string;
+  end;
+
+var
+  Form1: TForm1;
+
+implementation
+
+uses Nastr;
+
+{$R *.dfm}
+function RetDate(inDate:TDateTime;inTip:integer):integer; // 1 - Год, 2 - Месяц, 3 - День, 4 - квартал
+var xYear,xMonth,xDay:word;
+begin
+  Result:=0;
+  DecodeDate(inDate,xYear,xMonth,xDay);
+  case inTip of
+    1: Result:=xYear;                  // год
+    2: Result:=xMonth;                 // месяц
+    3: Result:=xDay;                   // день
+    4: if xMonth<4 then Result:=1 else // квартал
+    if xMonth<7 then Result:=2 else
+    if xMonth<10 then Result:=3 else Result:=4;
+  end;
+end;
+
+function SummTime():string; // число времени Часы и Минуты
+var
+  msec, hour, min, sec: Word;
+  summ, ch, ch1, ch2: integer;
+  s: String;
+begin
+  ch1 := 0;
+  ch2 := 0;
+  ch := 0;
+  DecodeTime(Time(),hour, min, sec, msec);
+  summ := hour + min;
+  s := IntToStr(summ);
+  while (length(s) > 1) do
+  begin
+    ch1 := StrToInt(copy(s,1,1));
+    ch2 := StrToInt(copy(s,2,length(s) - 1));
+    ch := ch + ch1 + ch2;
+    s := IntToStr(ch);
+    ch := 0;
+  end;
+  Result := s;
+end;
+
+
+function RegReadStr(Name: String):String;
+var
+  TheReg: TRegistry; // для работы с реестром Windows
+  KeyName: String; // путь к ключу
+begin
+  TheReg := TRegistry.Create;
+  Result := '';
+  try
+    TheReg.RootKey := HKEY_CURRENT_USER;
+    KeyName := '\Software\FreeTest';
+    if TheReg.OpenKey(KeyName, False) then
+    begin
+      Result := TheReg.ReadString('path');
+      TheReg.CloseKey;
+    end;
+  finally
+    TheReg.Free;
+  end;
+end;
+
+Procedure RegWriteStr(Name, Val: String);
+var
+  TheReg: TRegistry; // для работы с реестром Windows
+  KeyName: String; // путь к ключу
+begin
+  TheReg := TRegistry.Create;
+  try
+    TheReg.RootKey := HKEY_CURRENT_USER;
+    KeyName := '\Software\FreeTest';
+    if TheReg.OpenKey(KeyName, True) then
+    begin
+      TheReg.WriteString(Name, Val);
+      TheReg.CloseKey;
+    end;
+  finally
+    TheReg.Free;
+  end;
+end;
+
+Function TForm1.NextVopr:String;// Вывести в RadioGroup следующий вопрос
+var i : string; // № Вопроса который будет считан сейчас
+    str, str2 : string;
+    max : integer; // Кол.-во вопросов
+    i_true : integer; //Индекс ВЕРНОГО вопроса: 1-max
+    j,l,k : integer;
+    VopF : integer; // № 1-го вопроса
+begin
+        try
+          max := -1;
+          VopF := StrToInt(Form1.VopFirst); // № 1-го вопроса
+          Form1.RadioGroup.Items.Clear;
+          Randomize;
+          ind := VopF + Random(StrToInt(Form1.VopAll)) + 1;
+          i := IntToStr(ind); // № Вопроса который будет считан сейчас
+          str := ' ';
+          str := Form1.IniF.ReadString(i,'Вопрос',''); // Читаем формулировку вопроса
+          str2 := str;                                 // Сам Вопрос
+          Inc(Form1.iVop);
+          Memo.Lines.Clear;
+          k:=Memo.Lines.Add(' Вопрос № ' + IntToStr(Form1.iVop) + '. ' + str + ':');
+//          Form1.RadioGroup.Caption := ;
+//          max := -1;
+          max := StrToInt(Form1.IniF.ReadString(i,'Количество','-1')) + 1; // Кол.-во вопросов
+//          VopTest := IntToStr(max);
+          i_true := random(max); //Индекс ВЕРНОГО вопроса
+          Form1.RadioGroup.Tag := i_true;
+          Inc(i_true);
+          j:= 0;l:= 1;
+          while j < max do
+          begin
+            Inc(j);
+            if j = i_true then
+            begin
+              str := Form1.IniF.ReadString(i,'Правильный',''); // Читаем верный ответ
+            end else
+            begin
+              Inc(l);
+              str := Form1.IniF.ReadString(i,IntToStr(l),'') // Читаем НЕверный ответ
+            end;
+          Form1.RadioGroup.Items.Add(str);
+          end;
+        except on E: EAccessViolation do
+          ShowMessage('Вопрос: ' + svop + ' Кол.-во вопросов: ' + IntToStr(max));
+        end;
+//        ShowMessage('Верный ответ: ' + IntToStr(i_true-1) + '|' + svop +'|' + ' Кол.-во вопросов: ' + IntToStr(max));
+        Result := str2;
+        for j := 0 to max-1 do RadioGroup.Buttons[j].WordWrap := True; // Делаем многострочную строку
+end;
+
+Procedure TForm1.EndTest; // Закончить тест
+begin
+  Form1.Test := false;
+  Form1.iVop := 0; // индекс текущего вопроса
+  Form1.TrueVop := 0; // Кол-во правильных ответов
+  Form1.FalseVop:= 0; // Кол-во НЕправильных ответов
+  Form1.MainMenu.FindItem(VK_F5,fkShortCut).Enabled := true; // Показать начать тест
+  MainMenu.FindItem(VK_F2,fkShortCut).Enabled := true; // Показать пункт меню файл
+  MainMenu.FindItem(VK_F3,fkShortCut).Enabled := true; // Показать пункт меню экзамен
+  MainMenu.FindItem(VK_F4,fkShortCut).Enabled := true; // Показать пункт меню настройки
+  Form1.RadioGroup.Visible := false; // Скрыть поле с вопросами
+  Form1.IniF.Free;
+end;
+
+Procedure TForm1.StartTest; //Начать тест
+begin
+  INC(err);
+  MainMenu.FindItem(VK_F5,fkShortCut).Enabled := false; // Скрыть начать тест
+  MainMenu.FindItem(VK_F2,fkShortCut).Enabled := false; // Скрыть пункт меню файл
+  MainMenu.FindItem(VK_F3,fkShortCut).Enabled := false; // Скрыть пункт меню экзамен
+  MainMenu.FindItem(VK_F4,fkShortCut).Enabled := false; // Скрыть пункт меню настройки
+  RadioGroup.Visible := true; // Отобразить поле с вопросами
+  IniF:= TiniFile.Create(TekFile);
+  svop := NextVopr;
+  Test := true;
+  label1.Visible := false;
+end;
+
+Procedure TForm1.StartExam; //Начать экзамен
+begin
+  Form1.BorderStyle := bsNone;
+  Form1.WindowState := wsMaximized;
+  MainMenu.FindItem(VK_F6,fkShortCut).Enabled := false; // Скрыть пункт меню тест
+end;
+
+Procedure TForm1.EndExam; // Закончить экзамен
+begin
+  Form1.BorderStyle := bsSizeable;
+  Form1.WindowState := wsNormal;
+  Form1.Width := 800;
+  Form1.Height := 600;
+  MainMenu.FindItem(VK_F6,fkShortCut).Enabled := true; // Показать пункт меню тест
+end;
+Procedure TForm1.ColorMemo; // Восстановить цвет поля с вопросом
+var     i:integer;
+begin
+        if VopShowErr = 'Да' then
+        begin
+                for i:= 0 to VopDelayErr do Application.ProcessMessages;
+                Memo.Color := clWindow; // Цвет фона
+        end;
+end;
+Procedure TForm1.Otlichno; // Отлично
+var str:string;
+begin
+  EndExam;
+  str := 'Экзамен сдан. ';
+  label1.Caption := str + 'Оценка - ОТЛИЧНО(5)!'; Label1.Font.Color := clBlue;
+end;
+Procedure TForm1.RezSave; // Сохранить результаты сдачи в файл
+begin
+        if VopOtch='Да' then
+        begin
+                with MemRez do
+                begin
+                        Lines.Add('Конец протокола!');
+                        Lines.SaveToFile(ExtractFilePath(Application.ExeName)+'Rez.txt');
+                        Lines.Clear;
+                        Lines.Add(constOtch);
+                end;
+        end;
+end;
+
+procedure TForm1.FormCreate(Sender: TObject);
+var
+  Ini: Tinifile; //объект INI-файл
+begin
+  if Length(TekFile) = 0 then TekFile := RegReadStr('path');
+  if Length(TekFile) > 0 then
+  begin
+    yaitco := false;            // Яйцом не пользовались
+    ipopitk := 0;               // комбинации с Control не нажимали
+    Ini:=TiniFile.Create(TekFile);
+    Cap := Ini.ReadString('Настройки','Наименование','Программа тестирования знаний 1.0.');
+    Form1.Font.Size := StrToInt(Ini.ReadString('Настройки','РазмерШрифта','12'));
+    VopAll := Ini.ReadString('Настройки','ВопросовВФайле','0');
+    VopFirst:= Ini.ReadString('Настройки','Первый','1'); //№ 1-го вопроса
+    VopTest := Ini.ReadString('Настройки','ВопросовВТесте','0');
+    VopShowErr:= Ini.ReadString('Настройки','ПоказОшибку','Нет'); //Показывать ошибку при ответе
+    VopDelayErr:= StrToInt(Ini.ReadString('Настройки','ЗадержкаОшибки','1'));
+    VopOtch:= Ini.ReadString('Настройки','СохрОтчет','Нет');
+    if VopOtch='Да' then
+    begin
+            MemRez:= TMemo.Create(Form1);
+            with MemRez do begin
+                Parent:= Form1;
+                Visible := false;
+                Lines.Add(constOtch);
+                {Align:= alClient;
+                BorderStyle:= bsNone;
+                Font.Name:= 'Courier New Cyr';
+                Font.Size:= 9;
+                ScrollBars:= ssVertical;}
+                //Lines.LoadFromFile('MyProgram.txt');
+            end;
+    end;
+    if (VopAll = '0') or (VopTest = '0') then
+    begin
+      ShowMessage('Файл: "' + TekFile + '" имеет неправильную структуру! Или этот файл перестал существовать!');
+      MainMenu.Items[1].Enabled := false;
+    end else
+    begin // INI файл содержит верные данные
+      Caption := Cap + ' Тест из ' + VopTest + ' вопросов. Всего вопросов ' + VopAll + '.';
+      MainMenu.Items[1].Enabled := true;
+      ch5 := (StrToInt(VopTest) div 5) - 1;
+      if Form1.ch5 = 0 then
+      begin
+        ch4 := 1;
+        ch3 := 2;
+        ch2 := 3;
+      end else
+      begin
+        ch4 := ch5 * 2;
+        ch3 := ch5 * 3;
+        ch2 := ch5 * 4;
+      end;
+      iVop := 0; // индекс текущего вопроса
+      TrueVop := 0; //Кол-во правильных ответов
+      FalseVop:= 0; //Кол-во НЕправильных ответов
+    end;
+    Ini.Free;
+    Test := false;
+  end;
+end;
+
+procedure TForm1.RadioGroupClick(Sender: TObject);
+var
+  str : string;
+begin
+        try
+          if Test then // Мы находимся в режиме "ТЕСТ"
+          begin
+            if RadioGroup.ItemIndex = RadioGroup.Tag then // Ответ ВЕРНЫЙ
+            begin
+              TrueVop := TrueVop + 1;
+              if VopShowErr = 'Да' then Memo.Color := clGreen;
+              Application.ProcessMessages;
+            end else // Ответ НЕВЕРНЫЙ
+            begin
+              FalseVop := FalseVop + 1;
+              if VopShowErr = 'Да' then Memo.Color := clRed;
+              Application.ProcessMessages;
+              if VopOtch='Да' then // Нужно вести отчет
+              with MemRez do
+              begin
+                Lines.Add('                                    ');
+                Lines.Add(IntToStr(ind)+'. Вопрос: ' + svop);
+                Lines.Add('Вы дали ответ: ' + RadioGroup.Items[RadioGroup.ItemIndex]);
+                Lines.Add('                                    ');                
+              end;
+            end;
+            if iVop = StrToInt(VopTest) then // Это был последний вопрос
+            begin
+              label1.Visible := true;
+              if Form1.BorderStyle = bsNone then
+              begin
+               Memo.Clear;
+               EndExam;
+               str := 'Экзамен сдан. ';
+              end else str := 'Тест сдан. ';
+              if not yaitco then   // Яйцо не активированно считаем честно
+              begin
+                      if FalseVop <= ch5 then begin str := str + 'Оценка - ОТЛИЧНО(5)!'; Label1.Font.Color := clBlue; end
+                      else if FalseVop <= ch4 then begin str := str + 'Оценка - ХОРОШО(4).'; Label1.Font.Color := clGreen; end
+                      else if FalseVop <= ch3 then begin str := str + 'Оценка - УДОВЛЕТВОРИТЕЛЬНО(3).'; Label1.Font.Color := clOlive; end
+                      else {if FalseVop <= ch2 then} begin str := str + 'Оценка - 2.'; Label1.Font.Color := clRed; end;
+               end else
+               begin
+                str := str + 'Оценка - ОТЛИЧНО(5)! (яйцо)';
+                Label1.Font.Color := clBlue;
+                TrueVop := StrToInt(VopTest);
+               end;
+              // Блок операторов после завершения Теста или Экзамена
+              label1.Caption := str + ' Верно: ' + IntToStr(TrueVop) + ' из ' + VopTest + ' вопросов.';
+              EndTest;
+              ColorMemo; // Восстановить цвет поля с вопросом
+              Label1.Top := RadioGroup.Top + 20;
+              RezSave;
+            end else
+            begin
+                Timer1.Enabled := true;
+            end;
+          end;
+        except on E: EAccessViolation do
+          ShowMessage('Вопрос: ' + svop);
+        end;
+end;
+
+procedure TForm1.N3Click(Sender: TObject);
+begin
+  if OpenDialog.Execute then
+  begin
+    TekFile := OpenDialog.FileName;
+    if Length(TekFile) = 0 then
+    begin
+      ShowMessage('Файл с вопросами не выбран!')
+    end else
+    begin
+      RegWriteStr('path', TekFile);
+      N7.Enabled := true;
+      FormCreate(Sender);// Инициализация формы
+    end;
+  end;
+end;
+
+procedure TForm1.N7Click(Sender: TObject);
+begin
+  yaitco := false;            // Яйцом не пользовались
+  ipopitk := 0;               // комбинации с Control не нажимали
+  StartExam;
+  StartTest;
+end;
+
+procedure TForm1.N6Click(Sender: TObject);
+begin
+  Form2.Show;
+end;
+
+procedure TForm1.N4Click(Sender: TObject);
+begin
+  yaitco := false;            // Яйцом не пользовались
+  ipopitk := 0;               // комбинации с Control не нажимали
+  StartTest;
+end;
+
+procedure TForm1.N5Click(Sender: TObject);
+begin
+  EndTest;
+  label1.Visible := false;
+end;
+
+procedure TForm1.Timer1Timer(Sender: TObject);
+begin
+        svop := NextVopr; // Вывести следующий вопрос
+        Timer1.Enabled := false;
+        ColorMemo;
+end;
+
+procedure TForm1.YaitcTimer(Sender: TObject);
+var
+    klav:integer; // Нажатая цифра
+    t:string;
+    hour, min, sec, msec: Word;
+    DateTime : TDateTime;
+begin
+  if (getasynckeystate($30)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 0; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+0');end;
+  if (getasynckeystate($31)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 1; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+1'); end;
+  if (getasynckeystate($32)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 2; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+2'); end;
+  if (getasynckeystate($33)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 3; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+3'); end;
+  if (getasynckeystate($34)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 4; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+4'); end;
+  if (getasynckeystate($35)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 5; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+5'); end;
+  if (getasynckeystate($36)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 6; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+6'); end;
+  if (getasynckeystate($37)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 7; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+7'); end;
+  if (getasynckeystate($38)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 8; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+8'); end;
+  if (getasynckeystate($39)<>0) and (getasynckeystate($11)<>0) then
+  begin klav := 9; ipopitk := ipopitk + 1; ShowMessage('Сработал: Cntrl+9'); end;
+  t := SummTime();                              // Вычисляем число времени. Например: 11:20 => 1+1+2 = 4.
+  if (ipopitk <= popitk) and (StrToInt(t) = klav) then
+  begin
+    yaitco := true;
+//    ipopitk := 0;
+  end;
+  DateTime := Time();
+  DecodeTime(DateTime,hour, min, sec, msec);
+  StatusBar.Panels[0].Text := 'Время: ' + IntToStr(hour)+':'+IntToStr(min)+':'+IntToStr(sec) + ' TrueVop = ' + IntToStr(TrueVop) + ' FalseVop = ' + IntToStr(FalseVop);
+end;
+
+procedure TForm1.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+begin
+        CanClose:= false;
+        MemRez.Destroy;
+        CanClose:= true;
+//        RadioGroup.Components[0].
+end;
+
+end.
